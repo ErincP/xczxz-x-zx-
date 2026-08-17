@@ -22,7 +22,9 @@ DATA: BEGIN OF gs_final_package,                "döngüde tablolardan alınan v
         zzid  TYPE zpp_meo_id,
         maktx TYPE maktx,
       END OF gs_final_package.
-
+DATA: lv_max_matnr         TYPE matnr,
+      lv_last_processed_id TYPE zpp_tbl_meo-zzid,
+      lv_max_id            TYPE zpp_tbl_meo-zzid.
 TYPES: BEGIN OF gs_final_package2,                "döngüde tablolardan alınan verilerin toplanacağı structure
         matnr TYPE matnr,
         zzid  TYPE zpp_meo_id,
@@ -34,12 +36,27 @@ FIELD-SYMBOLS: <gt_data>  TYPE STANDARD TABLE,
                <gs_data>  TYPE any,
                <gv_matnr> TYPE any,
                <gv_zzid>  TYPE any.  "Delta/Takip ID'sini okumak için.
+DATA lv_maktx TYPE maktx.
 DATA: lv_spras TYPE spras.
+
+DATA meo_log TYPE ZPP_TBL_MEO.
+
+DATA: lv_baslangic_saati TYPE uzeit,
+      lv_bitis_saati     TYPE uzeit,
+      lv_baslangic_tarihi TYPE datum,
+      lv_bitis_tarihi TYPE datum,
+      lv_tanim TYPE zpp_meo_tanim.
+
+DATA: lv_last_zzid TYPE zpp_tbl_meo-zzid.
 *&---------------------------------------------------------------------*
 *---- ANA YÜRÜTME BLOĞU -----*
 START-OF-SELECTION.
 
   lv_spras = sy-langu.
+  lv_baslangic_saati = sy-uzeit.
+  lv_baslangic_tarihi = sy-datum.
+  lv_spras = sy-langu.
+
 
   SELECT tabname FROM zmatnr_tablolar                   "Aktif tabloları çekiyoruz.
                  INTO TABLE gt_active_tables
@@ -51,10 +68,10 @@ START-OF-SELECTION.
   ENDIF.
 
   LOOP AT gt_active_tables INTO gs_active_table.   "Aktif tabloları sırasıyla döngüye alıyoruz.
-    DATA: lv_max_matnr         TYPE matnr,
-          lv_last_processed_id TYPE zpp_tbl_meo-zzid,
-          lv_max_id            TYPE zpp_tbl_meo-zzid.
 
+IF gs_active_table-tabname = 'ZPPT_MEO_VRS_DEP'.
+  BREAK-POINT.
+ENDIF.
 
     CLEAR: lv_max_matnr,
            lv_last_processed_id,
@@ -79,11 +96,6 @@ START-OF-SELECTION.
            WHERE tanim = 'ZMMR_MEO_SQL'
            INTO @lv_last_processed_id.
 
-    IF sy-subrc <> 0.
-      lv_last_processed_id = 0.
-    ENDIF.
-
-
     SELECT MAX( zzid )
            FROM (gs_active_table-tabname)  "Log tablosundan son zzid'yi çekiyoruz.
            INTO @lv_max_id.
@@ -91,28 +103,19 @@ START-OF-SELECTION.
     IF lv_max_id > lv_last_processed_id.         "Eğer raporun çalışmasından sonra kayıt varsa deltayı alıyoruz
 
       SELECT matnr, zzid FROM (gs_active_table-tabname)                 "
-              INTO TABLE @<gt_data>
+              INTO CORRESPONDING FIELDS OF TABLE @<gt_data>
               WHERE zzid > @lv_last_processed_id
               AND zzid <= @lv_max_id.
 
 
       DATA(lv_lines) = lines( <gt_data> ).                                 "Tablodaki kayıtları structure'a çekiyoruz
       WRITE: / 'İşlenecek kayıt sayısı' , lv_lines.
-      DATA lv_maktx TYPE maktx.
       LOOP AT <gt_data> INTO <gs_data>.
 
         CLEAR: lv_maktx.                                                    "Structure'dan gerekli alanları variable'lara çekiyoruz.
         ASSIGN COMPONENT 'MATNR' OF STRUCTURE <gs_data> TO <gv_matnr>.
         ASSIGN COMPONENT 'ZZID' OF STRUCTURE <gs_data> TO <gv_zzid>.
 
-        IF sy-subrc <> 0.                                                   "İstisna kontrolü.
-          "------------------------ÖZEL İSTİSNA ALANI-------------------"
-
-          " ZMM_YAS_NEW_1   ==> CNO BURADAN ÇEKİLECEK "
-
-          "----------------------- ÖZEL İSTİSNA ALANI
-          CONTINUE.   "Şimdilik hata vermiyor".
-        ELSE.                                                              " ZZID sorunsuz bağlandıysa.
           IF <gv_matnr> IS ASSIGNED AND <gv_matnr> IS NOT INITIAL.
             SELECT SINGLE maktx
               FROM makt
@@ -126,7 +129,6 @@ START-OF-SELECTION.
           gs_final_package-maktx = lv_maktx.
           APPEND gs_final_package TO gt_final_package.
 
-        ENDIF.
       ENDLOOP.
 
       WRITE: / 'Tablo başarıyla işlendi'.
@@ -144,9 +146,29 @@ START-OF-SELECTION.
   ENDIF.
 
 
- DATA loop_final TYPE gs_final_package2.
+ DATA loop_final TYPE gs_final_package2.                       "SQL'den önce final paketinde gezip çalışıyor mu diye test et 
  LOOP AT gt_final_package INTO loop_final.
- WRITE: / 'Materyal Adı' , loop_final-zzid.
- WRITE: / 'Materyal zzidsi' , loop_final-matnr.
+ WRITE: / 'Materyal Adı' , loop_final-matnr.
+ WRITE: / 'Materyal zzidsi' , loop_final-zzid.
  WRITE: / 'Materyal açıklaması' , loop_final-maktx.
  ENDLOOP.
+
+
+SELECT MAX( zzid )                     "Log tablosundan son kaydı çekiyoruz
+   FROM zpp_tbl_meo
+   INTO @lv_last_zzid.
+lv_last_zzid = lv_last_zzid + 1.        "Bir fazlasını alıyoruz
+lv_tanim = 'ZPP_MEO_SQL'.
+lv_bitis_tarihi = sy-datum.
+lv_bitis_saati = sy-uzeit.
+
+
+meo_log-BAS_TR = lv_baslangic_tarihi.    "Log tablosuna kayıt atıyoruz. 
+meo_log-BAS_SAAT = lv_baslangic_saati.
+meo_log-BIT_TR = lv_bitis_tarihi.
+meo_log-BIT_SAAT = lv_bitis_saati.
+meo_log-ERNAM = sy-uname.
+meo_log-MANDT = sy-mandt.
+meo_log-ZZID = lv_last_zzid.
+meo_log-TANIM = lv_tanim.
+INSERT zpp_tbl_meo FROM meo_log.
