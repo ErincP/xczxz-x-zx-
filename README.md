@@ -1,207 +1,198 @@
 *&---------------------------------------------------------------------*
-*& Include          ZPPR_MEO_STOK_TAKIP_FUNC
+*& Report ZMMR_MEO_SQL_TRANSFER
 *&---------------------------------------------------------------------*
+*&Yazan : Erinç Pırıldar
+*& Tarih : 12.08.2026
+*& CNo   :
+*& TCode :
+*& Amaç  : MEO veri çekme programları envanterinden çekilen verileri SQL'e transfer etme.
 *&---------------------------------------------------------------------*
-*& Form get_data
+REPORT zmmr_meo_sql.
+
 *&---------------------------------------------------------------------*
-*& text
+*---- VERİ TANIMLARI -----*
+DATA: BEGIN OF gs_active_table,                      " Tablo listesinde dönecek structure
+        tabname TYPE zmatnr_tablolar-tabname,
+      END OF gs_active_table.
+DATA: gt_active_tables LIKE TABLE OF gs_active_table.   "Tablo listesini tutacak geçici tablo yapısı
+DATA: dref_tab  TYPE REF TO data,
+      dref_line TYPE REF TO data.
+DATA: BEGIN OF gs_final_package,                "döngüde tablolardan alınan verilerin toplanacağı structure
+        matnr TYPE matnr,
+        zzid  TYPE zpp_meo_id,
+        maktx TYPE maktx,
+      END OF gs_final_package.
+DATA: lv_max_matnr         TYPE matnr,
+      lv_last_processed_id TYPE zpp_tbl_meo-zzid,
+      lv_max_id            TYPE zpp_tbl_meo-zzid.
+TYPES: BEGIN OF gs_final_package2,                "döngüde tablolardan alınan verilerin toplanacağı structure
+        matnr TYPE matnr,
+        zzid  TYPE zpp_meo_id,
+        maktx TYPE maktx,
+       END OF gs_final_package2.
+
+DATA: gt_final_package LIKE TABLE OF gs_final_package.
+FIELD-SYMBOLS: <gt_data>  TYPE STANDARD TABLE,
+               <gs_data>  TYPE any,
+               <gv_matnr> TYPE any,
+               <gv_zzid>  TYPE any.  "Delta/Takip ID'sini okumak için.
+DATA lv_maktx TYPE maktx.
+DATA: lv_spras TYPE spras.
+
+DATA meo_log TYPE ZPP_TBL_MEO.
+
+DATA: lv_baslangic_saati TYPE uzeit,
+      lv_bitis_saati     TYPE uzeit,
+      lv_baslangic_tarihi TYPE datum,
+      lv_bitis_tarihi TYPE datum,
+      lv_tanim TYPE zpp_meo_tanim.
+
+DATA: lv_last_zzid TYPE zpp_tbl_meo-zzid.
 *&---------------------------------------------------------------------*
-*& -->  p1        text
-*& <--  p2        text
-*&---------------------------------------------------------------------*
-form get_data .
+*---- ANA YÜRÜTME BLOĞU -----*
+START-OF-SELECTION.
 
-  if r_kydt is not initial.
+  lv_spras = sy-langu.
+  lv_baslangic_saati = sy-uzeit.
+  lv_baslangic_tarihi = sy-datum.
+  lv_spras = sy-langu.
 
-    select a~mblnr ,
-           a~mjahr ,
-           a~zeile ,
-           a~matnr ,
-           a~menge ,
-           a~meins ,
-           a~bwart ,
-           a~cpudt ,
-           a~budat ,
-           b~mtart ,
-           a~lifnr ,
-           a~werks ,
-           a~ebeln ,
-           a~ebelp ,
-           a~charg ,
-           a~shkzg ,
-           a~sjahr ,
-           a~smbln ,
-           a~smblp ,
-           a~xblnr ,
-           c~name1
-      from matdoc as a
-      inner join mara as b
-      on b~matnr = a~matnr
-      inner join lfa1 as c
-      on c~lifnr = a~lifnr
-      where a~matnr in @s_matnr
-      and   a~budat in @s_bdt
-      and   a~cpudt in @s_cpt
-      and   b~mtart in @s_mtrt
-      and   a~werks eq @p_wrk
-      and   a~bwart in @s_bwrt
-      into table @gt_mtdoc.
 
-  endif.
+  SELECT tabname FROM zmatnr_tablolar                   "Aktif tabloları çekiyoruz.
+                 INTO TABLE gt_active_tables
+                 WHERE aktif = 'X'.
 
-endform.
-*&---------------------------------------------------------------------*
-*& Form disable_selection
-*&---------------------------------------------------------------------*
-*& text
-*&---------------------------------------------------------------------*
-*& -->  p1        text
-*& <--  p2        text
-*&---------------------------------------------------------------------*
-form disable_selection .
+  IF gt_active_tables IS INITIAL.
+    MESSAGE 'Aktif veri tablosu bulunamadı' TYPE 'I'.
+    RETURN.
+  ENDIF.
 
-  loop at screen.
+  LOOP AT gt_active_tables INTO gs_active_table.   "Aktif tabloları sırasıyla döngüye alıyoruz.
 
-    if r_kydt = 'X'.
+IF gs_active_table-tabname = 'ZPPT_MEO_VRS_DEP'.
+  BREAK-POINT.
+ENDIF.
 
-      if screen-name cs 'P_DATE'
-      or screen-name cs 'S_ID'.
+    CLEAR: lv_max_matnr,
+           lv_last_processed_id,
+           lv_max_id.
 
-        screen-input     = 0.
-        screen-invisible = 1.
-        screen-active    = 0.
-      endif.
+    WRITE: / 'İşlenen Tablo: ', gs_active_table-tabname.
 
-    elseif r_sil = 'X'.
+    TRY.
+        CREATE DATA dref_tab TYPE TABLE OF (gs_active_table-tabname).   "Dinamik bellek alanlarını oluşturuyoruz.
+        ASSIGN dref_tab->* TO <gt_data>.
 
-      if screen-name cs 'S_MATNR'
-      or screen-name cs 'S_BDT'
-      or screen-name cs 'S_CPT'
-      or screen-name cs 'S_MTRT'
-      or screen-name cs 'P_WRK'
-      or screen-name cs 'S_BWRT'
-      or screen-name cs 'CB_AKTR'
-      or screen-name cs 'CB_LOG'.
+        CREATE DATA dref_line TYPE (gs_active_table-tabname).
+        ASSIGN dref_line->* TO <gs_data>.
 
-        screen-input     = 0.
-        screen-invisible = 1.
-        screen-active    = 0.
-      endif.
+      CATCH cx_sy_create_data_error.
+        WRITE: / 'HATA: Tablo yapısı dinamik olarak oluşturulamadı!'.
+        CONTINUE.
+    ENDTRY.
 
-    elseif r_srg = 'X'.
+    SELECT MAX( zzid )                      "Döngüde okunan tablodan max zzid'yi çekiyoruz.
+           FROM zpp_tbl_meo
+           WHERE tanim = 'ZMMR_MEO_SQL'
+           INTO @lv_last_processed_id.
 
-      if screen-name cs 'CB_LOG'
-      or screen-name cs 'S_MTRT'
-      or screen-name cs 'CB_AKTR'
-      or screen-name cs 'P_DATE'.
+    SELECT MAX( zzid )
+           FROM (gs_active_table-tabname)  "Log tablosundan son zzid'yi çekiyoruz.
+           INTO @lv_max_id.
 
-        screen-input     = 0.
-        screen-invisible = 1.
-        screen-active    = 0.
-      endif.
+    IF lv_max_id > lv_last_processed_id.         "Eğer raporun çalışmasından sonra kayıt varsa deltayı alıyoruz
 
-    endif.
+      SELECT matnr, zzid FROM (gs_active_table-tabname)                 "
+              INTO CORRESPONDING FIELDS OF TABLE @<gt_data>
+              WHERE zzid > @lv_last_processed_id
+              AND zzid <= @lv_max_id.
 
-    modify screen.
 
-  endloop.
+      DATA(lv_lines) = lines( <gt_data> ).                                 "Tablodaki kayıtları structure'a çekiyoruz
+      WRITE: / 'İşlenecek kayıt sayısı' , lv_lines.
+      LOOP AT <gt_data> INTO <gs_data>.
 
-endform.
-*&---------------------------------------------------------------------*
-*& Form save_data
-*&---------------------------------------------------------------------*
-*& text
-*&---------------------------------------------------------------------*
-*& -->  p1        text
-*& <--  p2        text
-*&---------------------------------------------------------------------*
-form save_data .
+        CLEAR: lv_maktx.                                                    "Structure'dan gerekli alanları variable'lara çekiyoruz.
+        ASSIGN COMPONENT 'MATNR' OF STRUCTURE <gs_data> TO <gv_matnr>.
+        ASSIGN COMPONENT 'ZZID' OF STRUCTURE <gs_data> TO <gv_zzid>.
 
-  clear: gt_ozet[], gt_detay[], gv_log_id.
+          IF <gv_matnr> IS ASSIGNED AND <gv_matnr> IS NOT INITIAL.
+            SELECT SINGLE maktx
+              FROM makt
+              INTO lv_maktx
+              WHERE matnr = <gv_matnr>
+              AND spras = lv_spras. "Sistemin mevcut dili.
+          ENDIF.
 
-  if cb_log is not initial and gt_mtdoc is not initial..
+          gs_final_package-matnr = <gv_matnr>.                      " Açıklamayı zzid ve mantr ile geçici tabloya atıyoruz
+          gs_final_package-zzid = <gv_zzid>.
+          gs_final_package-maktx = lv_maktx.
+          APPEND gs_final_package TO gt_final_package.
 
-    perform save_log.
+      ENDLOOP.
 
-    loop at gt_mtdoc into gs_mtdoc.
+      WRITE: / 'Tablo başarıyla işlendi'.
+    ELSE.
+      WRITE: / 'Tablo boş, kayıt bulunamadı'.
+    ENDIF.
 
-*-- Özet tablo için Z'li tabloya kayıt atılır.
-      clear gs_ozet.
-      gs_ozet-zzid  = gv_log_id..
-      gs_ozet-matnr = gs_mtdoc-matnr.
-      gs_ozet-bwart = gs_mtdoc-bwart.
-      gs_ozet-meins = gs_mtdoc-meins.
-      gs_ozet-menge = gs_mtdoc-menge.
-      gs_ozet-budat = gs_mtdoc-budat.
-      gs_ozet-lifnr = gs_mtdoc-lifnr.
+    CLEAR: dref_tab, dref_line.
+    UNASSIGN: <gt_data>, <gs_data>, <gv_zzid>, <gv_matnr>.
+  ENDLOOP.
 
-      gs_ozet-kayit_yapan  =  sy-uname.
-      gs_ozet-log_trh      =  sy-datum.
-      gs_ozet-log_saat     =  sy-uzeit.
+  IF gt_final_package IS NOT INITIAL.                     "Tekrar eden verileri temizle
+    SORT gt_final_package BY zzid matnr.
+    DELETE ADJACENT DUPLICATES FROM gt_final_package COMPARING zzid matnr.
+  ENDIF.
 
-*-- İade / çıkış hareketlerinde miktarı ters çevirmek istenirse;
-      if gs_mtdoc-shkzg = 'H'.
-        gs_ozet-menge = gs_ozet-menge  * -1.
-      endif.
 
-      collect gs_ozet into gt_ozet.
+ DATA loop_final TYPE gs_final_package2.                       "SQL'den önce final paketinde gezip çalışıyor mu diye test et 
+ LOOP AT gt_final_package INTO loop_final.
+ WRITE: / 'Materyal Adı' , loop_final-matnr.
+ WRITE: / 'Materyal zzidsi' , loop_final-zzid.
+ WRITE: / 'Materyal açıklaması' , loop_final-maktx.
+ ENDLOOP.
 
-*-- Detay tablo için Z'li tabloya kayıt atılır.
-      clear gs_detay.
-      gs_detay-zzid     =  gv_log_id." ilgili kayıtlara id verilir.
-      gs_detay-mblnr    =  gs_mtdoc-mblnr.
-      gs_detay-mjahr    =  gs_mtdoc-mjahr.
-      gs_detay-zeile    =  gs_mtdoc-zeile.
-      gs_detay-matnr    =  gs_mtdoc-matnr.
-      gs_detay-menge    =  gs_mtdoc-menge.
-      gs_detay-meins    =  gs_mtdoc-meins.
-      gs_detay-bwart    =  gs_mtdoc-bwart.
-      gs_detay-cpudt    =  gs_mtdoc-cpudt.
-      gs_detay-budat    =  gs_mtdoc-budat.
-      gs_detay-lifnr    =  gs_mtdoc-lifnr.
-      gs_detay-werks    =  gs_mtdoc-werks.
-      gs_detay-ebeln    =  gs_mtdoc-ebeln.
-      gs_detay-ebelp    =  gs_mtdoc-ebelp.
-      gs_detay-charg    =  gs_mtdoc-charg.
-      gs_detay-shkzg    =  gs_mtdoc-shkzg.
-      gs_detay-sjahr    =  gs_mtdoc-sjahr.
-      gs_detay-smbln    =  gs_mtdoc-smbln.
-      gs_detay-smblp    =  gs_mtdoc-smblp.
-      gs_detay-xblnr    =  gs_mtdoc-xblnr.
-      gs_detay-kayit_yapan  =  sy-uname.
-      gs_detay-kayit_trh    =  sy-datum.
-      gs_detay-kayit_saat   =  sy-uzeit.
 
-      append gs_detay to gt_detay.
 
-    endloop.
+FORM get_next_log_id CHANGING cv_zzid TYPE zpp_tbl_meo-zzid.
 
-    modify zppt_meo_stk_ozt from table gt_ozet.
+DATA: lv_number TYPE char10.
+CLEAR: cv_zzid, lv_number.
 
-    if sy-subrc <> 0.
-      message 'Log özet kaydı oluşturulamadı.' type 'E'.
-    endif.
+ CALL FUNCTION 'NUMBER_GET_NEXT'                     " Numara Aralığı Nesnesinden (Number Range Object) numara çeker 
+    EXPORTING
+      nr_range_nr             = '1'
+      object                  = 'ZPP_MEO_BS'
+    IMPORTING
+      number                  = lv_number
+    EXCEPTIONS
+      interval_not_found      = 1
+      number_range_not_intern = 2
+      object_not_found        = 3
+      quantity_is_0           = 4
+      quantity_is_not_1       = 5
+      interval_overflow       = 6
+      buffer_overflow         = 7
+      others                  = 8.
 
-    modify zppt_meo_stok from table gt_detay.
+  IF sy-subrc <> 0.
+   MESSAGE 'Log ID için numara aralığından değer alınamadı.' TYPE 'E'.
+  ENDIF.
 
-    if sy-subrc <> 0.
-      message 'Log detay kaydı oluşturulamadı.' type 'E'.
-    endif.
+  CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'          " Üretilen ID'ye Eksik sıfırları ekler 
+    EXPORTING
+      input  = lv_number
+    IMPORTING
+      output = cv_zzid.
 
-  endif.
+ENDFORM. 
 
-endform.
-*&---------------------------------------------------------------------*
-*& Form save_log
-*&---------------------------------------------------------------------*
-*& text
-*&---------------------------------------------------------------------*
-*& -->  p1        text
-*& <--  p2        text
-*&---------------------------------------------------------------------*
-form save_log .
 
-  clear gv_log_id.
+
+FORM save_log.
+
+  CLEAR lv_last_zzid.
 
   perform get_next_log_id changing gv_log_id.
 
@@ -233,442 +224,21 @@ form save_log .
 
   message | Log kaydı oluşturuldu. ID: { gv_log_id }| type 'S'.
 
-endform.
-*&---------------------------------------------------------------------*
-*& Form set_log_time
-*&---------------------------------------------------------------------*
-*& text
-*&---------------------------------------------------------------------*
-*& -->  p1        text
-*& <--  p2        text
-*&---------------------------------------------------------------------*
-form set_log_time .
 
-  get time.
-  gv_bas_tr    = sy-datum.
-  gv_bas_saat  = sy-uzeit.
 
-endform.
-*&---------------------------------------------------------------------*
-*& Form get_next_log_id
-*&---------------------------------------------------------------------*
-*& text
-*&---------------------------------------------------------------------*
-*&      <-- GV_LOG_ID
-*&---------------------------------------------------------------------*
-form get_next_log_id  changing cv_zzid type zpp_tbl_meo-zzid.
 
-  data: lv_number type char10.
 
-  clear: cv_zzid, lv_number.
+lv_tanim = 'ZPP_MEO_SQL'.
+lv_bitis_tarihi = sy-datum.
+lv_bitis_saati = sy-uzeit.
 
-  call function 'NUMBER_GET_NEXT'
-    exporting
-      nr_range_nr             = '1'
-      object                  = 'ZPP_MEO_BS'
-    importing
-      number                  = lv_number
-    exceptions
-      interval_not_found      = 1
-      number_range_not_intern = 2
-      object_not_found        = 3
-      quantity_is_0           = 4
-      quantity_is_not_1       = 5
-      interval_overflow       = 6
-      buffer_overflow         = 7
-      others                  = 8.
 
-  if sy-subrc <> 0.
-    message 'Log ID için numara aralığından değer alınamadı.' type 'E'.
-  endif.
-
-  call function 'CONVERSION_EXIT_ALPHA_INPUT'
-    exporting
-      input  = lv_number
-    importing
-      output = cv_zzid.
-
-endform.
-*&---------------------------------------------------------------------*
-*& Form data_log
-*&---------------------------------------------------------------------*
-*& text
-*&---------------------------------------------------------------------*
-*& -->  p1        text
-*& <--  p2        text
-*&---------------------------------------------------------------------*
-form data_log .
-
-  clear: gt_log[].
-  if r_srg is not initial.
-
-    select *
-      from zppt_meo_stok
-      into table @gt_log
-      where zzid in @s_id
-      and   matnr in @s_matnr
-      and   budat in @s_bdt
-      and   cpudt in @s_cpt
-      and   werks eq @p_wrk
-      and   bwart in @s_bwrt.
-
-  endif.
-endform.
-*&---------------------------------------------------------------------*
-*& Form delete_data
-*&---------------------------------------------------------------------*
-*& text
-*&---------------------------------------------------------------------*
-*& -->  p1        text
-*& <--  p2        text
-*&---------------------------------------------------------------------*
-form delete_data .
-
-  if r_sil is not initial.
-
-    types: begin of ty_zzid,
-             zzid type zpp_tbl_meo-zzid,
-           end of ty_zzid.
-
-    data: lt_zzid       type standard table of ty_zzid,
-          ls_zzid       type ty_zzid,
-          lv_head_count type c,
-          lv_upd_count  type c,
-          lv_det_count  type char4,
-          lv_answer     type c.
-
-    clear: lt_zzid,
-           lv_head_count,
-           lv_upd_count,
-           lv_det_count,
-           lv_answer.
-
-    "------------------------------------------------------------
-    " En az bir kriter zorunlu:
-    " S_ID veya P_DATE
-    "------------------------------------------------------------
-    if s_id[] is initial and p_date is initial.
-
-      message
-      'Log ID veya silme tarihi alanlarından en az biri dolu olmalıdır.'
-                                              type 'S' display like 'E'.
-      return.
-
-    endif.
-
-    "------------------------------------------------------------
-    " Sadece bu rapora ait loglar silinmeli
-    " TANIM = GR_M_MB51
-    " 1) Sadece S_ID doluysa: o ID'ler
-    " 2) Sadece P_DATE doluysa: BAS_TR =< P_DATE
-    " 3) İkisi de doluysa: ID + tarih kesişimi
-    "------------------------------------------------------------
-    if s_id[] is not initial and p_date is initial.
-
-      select zzid
-        from zpp_tbl_meo
-        into table lt_zzid
-        where zzid  in s_id
-        and tanim eq 'GR_M_MB51'
-        and loekz eq space.
-
-    elseif s_id[] is initial and p_date is not initial.
-
-      select zzid
-        from zpp_tbl_meo
-        into table lt_zzid
-        where bas_tr le p_date
-        and tanim  eq 'GR_M_MB51'
-        and loekz  eq space.
-
-    else.
-
-      select zzid
-        from zpp_tbl_meo
-        into table lt_zzid
-        where zzid   in s_id
-        and bas_tr le p_date
-        and tanim  eq 'GR_M_MB51'
-        and loekz  eq space.
-
-    endif.
-
-    if lt_zzid[] is initial.
-
-      message
-      'Silme kriterlerine uygun GR_M_MB51 Log kaydı bulunamadı.'
-                                       type 'S' display like 'E'.
-      return.
-
-    endif.
-
-    sort lt_zzid by zzid.
-    delete adjacent duplicates from lt_zzid comparing zzid.
-
-    describe table lt_zzid lines lv_head_count.
-
-    "------------------------------------------------------------
-    " Dialog çalışıyorsa onay al
-    "------------------------------------------------------------
-    if sy-batch is initial.
-
-      data : txt type char250.
-
-      concatenate lv_head_count ' adet GR_M_MB51 '
-      ' Log başlığı silindi olarak işaretlenecek'
-      ' ve detaylar bilgileri silinecek, devam edilsin mi? ' into txt.
-
-
-      call function 'POPUP_TO_CONFIRM'
-        exporting
-          titlebar              = 'LOG Silme Onayı'
-          text_question         = txt
-          text_button_1         = 'Evet'
-          text_button_2         = 'Hayır'
-          default_button        = '2'
-          display_cancel_button = 'X'
-        importing
-          answer                = lv_answer
-        exceptions
-          others                = 1.
-
-      if lv_answer ne '1'.
-        message 'Silme işlemi iptal edildi.' type 'S'.
-        return.
-      endif.
-
-    endif.
-
-    "------------------------------------------------------------
-    " Detay Tablosu fiziksel silinir.
-    " Başlık Tablosuna silme işareti atılır.
-    " Ek güvenlik: UPDATE sırasında da TANIM kontrol edilir.
-    "------------------------------------------------------------
-    loop at lt_zzid into ls_zzid.
-
-      delete from zppt_meo_stk_ozt where zzid = ls_zzid-zzid.
-
-      delete from zppt_meo_stok where zzid = ls_zzid-zzid.
-
-      lv_det_count = lv_det_count + sy-dbcnt.
-
-      update zpp_tbl_meo
-      set loekz   = 'X'
-      ernam_del   = sy-uname
-      datum_del   = sy-datum
-      where zzid  = ls_zzid-zzid
-      and tanim   = 'GR_M_MB51'
-      and loekz   = space.
-
-      lv_upd_count = lv_upd_count + sy-dbcnt.
-
-    endloop.
-
-    commit work and wait.
-
-    clear txt.
-
-    concatenate lv_upd_count ' adet GR_M_MB51 '
-    ' Log başlığı silindi olarak işaretlendi, '
-    lv_det_count ' detay kaydı silindi.' into txt.
-
-    message txt type 'S'.
-
-  endif.
-
-endform.
-*&---------------------------------------------------------------------*
-*& Form data_aktar
-*&---------------------------------------------------------------------*
-*& text
-*&---------------------------------------------------------------------*
-*& -->  p1        text
-*& <--  p2        text
-*&---------------------------------------------------------------------*
-form data_aktar .
-
-  if cb_aktr is not initial.
-
-    perform start_of_conn.
-    check lv_stop is initial .
-    perform insert_values_to_ex_sql.
-    perform end_of_conn.
-
-  endif.
-
-endform.
-*&---------------------------------------------------------------------*
-*& Form start_of_conn
-*&---------------------------------------------------------------------*
-*& text
-*&---------------------------------------------------------------------*
-*& -->  p1        text
-*& <--  p2        text
-*&---------------------------------------------------------------------*
-form start_of_conn .
-
-  clear: dbs, lv_stop.
-
-  case sy-sysid.
-    when 'O4P'.
-      dbs =  dbs_prod .
-    when 'O4D' or 'O4Q'.
-      dbs = dbs_test.
-    when others.
-      lv_stop = 'X' .
-      message |{ sy-sysid } sistemi için DBCON bağlantısı tanımlanmamış|
-      type 'I'.
-      return.
-  endcase.
-
-  try.
-      exec sql.
-
-        CONNECT TO :dbs AS 'c1'
-
-      endexec.
-                                                        "#EC CI_EXECSQL
-                                                        "#EC CI_EXECSQL
-      exec sql.
-
-        SET CONNECTION 'c1'
-
-      endexec.
-                                                        "#EC CI_EXECSQL
-
-    catch cx_sy_native_sql_error into exc_ref.
-      error_text = exc_ref->get_text( ).
-      lv_stop = 'X' .
-
-      message error_text type 'I' .
-  endtry .
-                                                        "#EC CI_EXECSQL
-endform.
-*&---------------------------------------------------------------------*
-*& Form insert_values_to_ex_sql
-*&---------------------------------------------------------------------*
-*& text
-*&---------------------------------------------------------------------*
-*& -->  p1        text
-*& <--  p2        text
-*&---------------------------------------------------------------------*
-form insert_values_to_ex_sql .
-
-  data: exc_ref    type ref to cx_sy_native_sql_error,
-        error_text type string,
-        ls_sas_flg type xfeld.
-
-
-  select zzid,
-         matnr,
-         bwart,
-         meins,
-         budat,
-         lifnr,
-         menge
-    from zppt_meo_stk_ozt
-    where matnr in @s_matnr
-    and budat in @s_bdt
-    and bwart in @s_bwrt
-    into corresponding fields of table @gt_aktar.
-
-  if gt_aktar[] is initial.
-    message 'Aktarılacak veri bulunamadı' type 'S' display like 'W'.
-    return.
-  endif.
-
-  " ---- SQL tarafına aktarım ----
-  try.
-
-      loop at gt_aktar into gs_aktar.
-
-        " Aynı anahtara sahip kayıt varsa önce sil
-        "(kayıt yoksa hiçbir şey silinmez)
-                                                        "#EC CI_EXECSQL
-        exec sql.
-          DELETE FROM dbo.t_mb51
-          WHERE zzid  = :gs_aktar-zzid
-          AND   matnr = :gs_aktar-matnr
-          AND   bwart = :gs_aktar-bwart
-          AND   meins = :gs_aktar-meins
-          AND   budat = :gs_aktar-budat
-          AND   lifnr = :gs_aktar-lifnr
-        endexec.
-                                                        "#EC CI_EXECSQL
-
-        " Koşulsuz ekle
-                                                        "#EC CI_EXECSQL
-        exec sql.
-          INSERT INTO dbo.t_mb51
-          ( zzid, matnr, bwart, meins, budat, lifnr, menge )
-          VALUES
-          ( :gs_aktar-zzid,
-            :gs_aktar-matnr,
-            :gs_aktar-bwart,
-            :gs_aktar-meins,
-            :gs_aktar-budat,
-            :gs_aktar-lifnr,
-            :gs_aktar-menge )
-        endexec.
-                                                        "#EC CI_EXECSQL
-
-        update zppt_meo_stk_ozt set aktarildi = 'X'
-        where zzid  = gs_aktar-zzid
-          and matnr = gs_aktar-matnr
-          and bwart = gs_aktar-bwart
-          and meins = gs_aktar-meins
-          and budat = gs_aktar-budat
-          and lifnr = gs_aktar-lifnr.
-
-      endloop.
-
-      " ---- Tüm loop hatasız bittiyse COMMIT ----
-      " Harici SQL bağlantısı için commit
-                                                        "#EC CI_EXECSQL
-      exec sql.
-        COMMIT
-      endexec.
-                                                        "#EC CI_EXECSQL
-
-      commit work.
-
-    catch cx_sy_native_sql_error into exc_ref.
-                                                        "#EC CI_EXECSQL
-      exec sql.
-        ROLLBACK
-      endexec.
-                                                        "#EC CI_EXECSQL
-      " SAP tarafı update'lerini geri al
-      rollback work.
-
-      error_text = exc_ref->get_text( ).
-      message error_text type 'I'.
-      ls_sas_flg = 'X'.
-
-  endtry.
-
-  " ---- 4) Sonuç mesajı ----
-  if ls_sas_flg is initial.
-    message 'Aktarım İşlemi Tamamlandı' type 'S' display like 'I'.
-  endif.
-
-endform.
-*&---------------------------------------------------------------------*
-*& Form end_of_conn
-*&---------------------------------------------------------------------*
-*& text
-*&---------------------------------------------------------------------*
-*& -->  p1        text
-*& <--  p2        text
-*&---------------------------------------------------------------------*
-form end_of_conn .
-
-                                                        "#EC CI_EXECSQL
-  exec sql.
-
-    COMMIT WORK AND WAIT.
-    DISCONNECT 'c1'
-
-  endexec.
-                                                        "#EC CI_EXECSQL
-endform.
+meo_log-BAS_TR = lv_baslangic_tarihi.    "Log tablosuna kayıt atıyoruz. 
+meo_log-BAS_SAAT = lv_baslangic_saati.
+meo_log-BIT_TR = lv_bitis_tarihi.
+meo_log-BIT_SAAT = lv_bitis_saati.
+meo_log-ERNAM = sy-uname.
+meo_log-MANDT = sy-mandt.
+meo_log-ZZID = lv_last_zzid.
+meo_log-TANIM = lv_tanim.
+INSERT zpp_tbl_meo FROM meo_log.
