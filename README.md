@@ -7,222 +7,247 @@
 *& TCode :
 *& Amaç  : MEO veri çekme programları envanterinden çekilen verileri SQL'e transfer etme.
 *&---------------------------------------------------------------------*
-REPORT zmmr_meo_sql.
+report zmmr_meo_sql.
 
-*&---------------------------------------------------------------------*
+**********************************************************************
 *---- VERİ TANIMLARI -----*
 
-DATA: BEGIN OF gs_active_table,                      " Tablo listesinde dönecek structure
-        tabname TYPE zmatnr_tablolar-tabname,
-      END OF gs_active_table.
+data: begin of gs_active_table,                      " Tablo listesinde dönecek structure
+        tabname type zmatnr_tablolar-tabname,
+      end of gs_active_table.
 
-DATA: gt_active_tables LIKE TABLE OF gs_active_table.   "Tablo listesini tutacak geçici tablo yapısı
-
-
-DATA: dref_tab  TYPE REF TO data,
-      dref_line TYPE REF TO data.
-
-DATA: BEGIN OF gs_final_package,                "döngüde tablolardan alınan verilerin toplanacağı structure
-        matnr TYPE matnr,
-        zzid  TYPE zpp_meo_id,
-        maktx TYPE maktx,
-      END OF gs_final_package.
-
-DATA: gt_final_package LIKE TABLE OF gs_final_package.   " Final tablosu
-
-DATA: gv_max_matnr         TYPE matnr,                 " Delta takibini yapmaya yarayacak variable'lar.
-      gv_last_processed_id TYPE zpp_tbl_meo-zzid,
-      gv_max_id            TYPE zpp_tbl_meo-zzid.
+data: gt_active_tables like table of gs_active_table.   "Tablo listesini tutacak geçici tablo yapısı
 
 
-TYPES: BEGIN OF gs_final_package2,                "TEST AMAÇLI
-         matnr TYPE matnr,
-         zzid  TYPE zpp_meo_id,
-         maktx TYPE maktx,
-       END OF gs_final_package2.
+data: dref_tab  type ref to data,
+      dref_line type ref to data.
 
-FIELD-SYMBOLS: <gt_data>  TYPE STANDARD TABLE,        " Dinamik veri yapısı için alan sembolleri
-               <gs_data>  TYPE any,
-               <gv_matnr> TYPE any,
-               <gv_zzid>  TYPE any.  "Delta/Takip ID'sini okumak için.
+data: begin of gs_final_package,                "döngüde tablolardan alınan verilerin toplanacağı structure
+        matnr type matnr,
+        zzid  type zpp_meo_id,
+        maktx type maktx,
+      end of gs_final_package.
 
-DATA lv_maktx TYPE maktx.         " Malzeme tanımı için
+data: gt_final_package like table of gs_final_package.   " Final tablosu
 
-DATA: gv_spras TYPE spras.        " Dil için.
+data: gv_last_processed_id type zpp_tbl_meo-zzid,   " Delta takibini yapmaya yarayacak variable'lar
+      gv_max_id            type zpp_tbl_meo-zzid.
 
-DATA: gv_log_id           TYPE zpp_tbl_meo-zzid,   " LOG süreci için global değişkenler
-      gv_baslangic_saati  TYPE uzeit,
-      gv_bitis_saati      TYPE uzeit,
-      gv_baslangic_tarihi TYPE datum,
-      gv_bitis_tarihi     TYPE datum,
-      gv_tanim            TYPE zpp_meo_tanim,
-      meo_log             TYPE zpp_tbl_meo.
+types: begin of ty_makt_map,
+         matnr type matnr,
+         maktx type maktx,
+       end of ty_makt_map.
+
+data: gt_makt_map type hashed table of ty_makt_map with unique key matnr,   " Açıklamaları tutacak geçici tablo
+      gs_makt_map type ty_makt_map.
+
+types: begin of gs_final_package2,                "TEST AMAÇLI
+         matnr type matnr,
+         zzid  type zpp_meo_id,
+         maktx type maktx,
+       end of gs_final_package2.
+
+field-symbols: <gt_data>  type standard table,        " Dinamik veri yapısı için alan sembolleri
+               <gs_data>  type any,
+               <gv_matnr> type any,
+               <gv_zzid>  type any, "Delta/Takip ID'sini okumak için.
+               <fs_pkg>   like line of gt_final_package.
+
+data lv_maktx type maktx.         " Malzeme tanımı için
+
+data: gv_spras type spras.        " Dil için.
+
+data: gv_log_id           type zpp_tbl_meo-zzid,   " LOG süreci için global değişkenler
+      gv_baslangic_saati  type uzeit,
+      gv_bitis_saati      type uzeit,
+      gv_baslangic_tarihi type datum,
+      gv_bitis_tarihi     type datum,
+      gv_tanim            type zpp_meo_tanim,
+      meo_log             type zpp_tbl_meo.
 
 
-*&-----------------------------------------*---- ANA YÜRÜTME BLOĞU ------------------------------------------------------*
-START-OF-SELECTION.
+********************************************************************** ANA YÜRÜTME BLOĞU
 
-  PERFORM set_log_time.          "Programı çalıştırmadan evvel başlangıç tarihini ve saatini al
+start-of-selection.
+
+  perform set_log_time.          "Programı çalıştırmadan evvel başlangıç tarihini ve saatini al
 
   gv_spras = sy-langu.           " Dil.
 
 
 
-  SELECT MAX( zzid )                      "Log tablosundan, bu raporun son çalıştırıldığı ID'yi çekiyoruz.
-           FROM zpp_tbl_meo
-           WHERE tanim = 'ZMMR_MEO_SQL'
-           INTO @gv_last_processed_id.
-  IF gv_last_processed_id  IS INITIAL.
+  select max( zzid )                      "Log tablosundan, bu raporun son çalıştırıldığı ID'yi çekiyoruz.
+           from zpp_tbl_meo
+           where tanim = 'ZMMR_MEO_SQL'
+           into @gv_last_processed_id.
+    
+  if gv_last_processed_id  is initial.
     gv_last_processed_id = 0.
-  ENDIF.
+  endif.
+
+  select max( zzid )                      " Log tablosundan, kayıt yapan son ID'yi çekiyoruz.
+    from zpp_tbl_meo                                       "(sistemin ulaştığı son nokta)
+    into @gv_max_id.
+
+  select tabname from zmatnr_tablolar                   "Aktif tabloları çekiyoruz.
+                    into table gt_active_tables
+                    where aktif = 'X'.
+
+  if gt_active_tables is initial.
+    message 'Aktif veri tablosu bulunamadı' type 'I'.
+    return.
+  endif.
+
+  if gv_max_id > gv_last_processed_id.        " Bizden sonra yeni hareket var mı?
+
+    loop at gt_active_tables into gs_active_table.            "Varsa aktif tabloları sırasıyla döngüye alıyoruz.
+
+      write: / 'İşlenen Tablo: ', gs_active_table-tabname.
+
+
+      try.
+          create data dref_tab type table of (gs_active_table-tabname).   "Dinamik bellek alanlarını oluşturuyoruz.
+          assign dref_tab->* to <gt_data>.
+
+          create data dref_line type (gs_active_table-tabname).
+          assign dref_line->* to <gs_data>.
+
+        catch cx_sy_create_data_error.
+          write: / 'HATA: Tablo yapısı dinamik olarak oluşturulamadı!'.
+          continue.
+      endtry.
+
+
+      select matnr, zzid from (gs_active_table-tabname)           " Sıradaki tablodan delta aralığını çekiyoruz
+              into corresponding fields of table @<gt_data>
+              where zzid > @gv_last_processed_id
+              and zzid <= @gv_max_id.
+
+
+      data(lv_lines) = lines( <gt_data> ).
+      write: / |-> Çekilen kayıt sayısı : { lv_lines }|.
+
+
+
+      loop at <gt_data> into <gs_data>.       "Dinamik tablodaki kayıtlar içerisinde structure ile dönüyoruz.
+
+        clear: lv_maktx.                                                    "Structure'dan gerekli alanları variable'lara çekiyoruz.
+        assign component 'MATNR' of structure <gs_data> to <gv_matnr>.
+        assign component 'ZZID' of structure <gs_data> to <gv_zzid>.
 
 
 
 
-  SELECT MAX( zzid )                      " Log tablosundan, kayıt yapan son ID'yi çekiyoruz.
-    FROM zpp_tbl_meo                                       "(sistemin ulaştığı son nokta)
-    INTO @gv_max_id.
+        if <gv_matnr> is assigned and <gv_matnr> is not initial and    " Eğer matnr ve zzid alanları boş değilse
+           <gv_zzid> is assigned and <gv_zzid> is not initial.
+          clear gs_final_package.
+          gs_final_package-matnr = <gv_matnr>.                      " Bu satırı SQL'e gidecek olan tabloya atıyoruz.
+          gs_final_package-zzid = <gv_zzid>.
+          append gs_final_package to gt_final_package.
+        endif.
 
 
+      endloop.
 
+      clear: dref_tab, dref_line.
+      unassign: <gt_data>, <gs_data>, <gv_zzid>, <gv_matnr>.
 
-  SELECT tabname FROM zmatnr_tablolar                   "Aktif tabloları çekiyoruz.
-                    INTO TABLE gt_active_tables
-                    WHERE aktif = 'X'.
-  IF gt_active_tables IS INITIAL.
-    MESSAGE 'Aktif veri tablosu bulunamadı' TYPE 'I'.
-    RETURN.
-  ENDIF.
-
-
-
-
-  IF gv_max_id > gv_last_processed_id.        " Bizden sonra yeni hareket var mı kontrolü 
-
-
-    LOOP AT gt_active_tables INTO gs_active_table.   "Eğer varsa, deltayı çekmek için tabloları sırasıyla aktif döngüye alıyoruz
-
-
-      CLEAR: gv_max_matnr,
-             gv_last_processed_id,
-             gv_max_id.
-      WRITE: / 'İşlenen Tablo: ', gs_active_table-tabname.
-
-
-
-      TRY.
-          CREATE DATA dref_tab TYPE TABLE OF (gs_active_table-tabname).   "Dinamik bellek alanlarını oluşturuyoruz.
-          ASSIGN dref_tab->* TO <gt_data>.
-
-          CREATE DATA dref_line TYPE (gs_active_table-tabname).
-          ASSIGN dref_line->* TO <gs_data>.
-
-        CATCH cx_sy_create_data_error.
-          WRITE: / 'HATA: Tablo yapısı dinamik olarak oluşturulamadı!'.
-          CONTINUE.
-      ENDTRY.
-      
-
-
-      SELECT matnr, zzid FROM (gs_active_table-tabname)  "Sıradaki tablodan matnr ve zzid'yi çekelim 
-              INTO CORRESPONDING FIELDS OF TABLE @<gt_data>
-              WHERE zzid > @lv_last_processed_id
-              AND zzid <= @lv_max_id.
-
-
-
-      DATA(lv_lines) = lines( <gt_data> ).             "Bu tablodan kaç kayıt çektik ekrana yaz. 
-      WRITE: / 'İşlenecek kayıt sayısı' , lv_lines.
-      
-      
-      
-      
-      
-      LOOP AT <gt_data> INTO <gs_data>.   "matnr ve zzid'leri çektiğimiz dinamik tabloda gez. 
-
-
-
-        CLEAR: lv_maktx.         
-        UNASSIGN <gv_matnr>, <gv_zzid>.                                           
-        ASSIGN COMPONENT 'MATNR' OF STRUCTURE <gs_data> TO <gv_matnr>.  "Matnr sütununu dinamik değişkene ata
-        ASSIGN COMPONENT 'ZZID' OF STRUCTURE <gs_data> TO <gv_zzid>.    "ZZID sütununu dinamik değişkene ata
-
-
-
-        IF <gv_matnr> IS ASSIGNED AND <gv_matnr> IS NOT INITIAL.  "Bir matnr varsa elimizde, bunu 
-          SELECT SINGLE maktx
-            FROM makt
-            INTO lv_maktx
-            WHERE matnr = <gv_matnr>
-            AND spras = gv_spras. "Sistemin mevcut dili.
-        ENDIF.
-
-
-        gs_final_package-matnr = <gv_matnr>.                      " Açıklamayı zzid ve mantr ile geçici tabloya atıyoruz
-        gs_final_package-zzid = <gv_zzid>.
-        gs_final_package-maktx = lv_maktx.
-        APPEND gs_final_package TO gt_final_package.
-
-      ENDLOOP.
-
-      WRITE: / 'Tablo başarıyla işlendi'.
-    ELSE.
-      WRITE: / 'Tablo boş, kayıt bulunamadı'.
-    ENDIF.
-
-    CLEAR: dref_tab, dref_line.
-    UNASSIGN: <gt_data>, <gs_data>, <gv_zzid>, <gv_matnr>.
-  ENDLOOP.
-
-
-  PERFORM save_log.   "İşlem sonunda log at
-
-
-*&-----------------------------------------*---- ANA YÜRÜTME BLOĞU ------------------------------------------------------*
-
-
-
-*&-----------------------------------------*---- SQL SÜRECİ ------------------------------------------------------*
-  IF gt_final_package IS NOT INITIAL.                     "Tekrar eden verileri temizle
-    SORT gt_final_package BY zzid matnr.
-    DELETE ADJACENT DUPLICATES FROM gt_final_package COMPARING zzid matnr.
-  ENDIF.
-
-
-  DATA loop_final TYPE gs_final_package2.                       "SQL'den önce final paketinde gezip çalışıyor mu diye test et
-  LOOP AT gt_final_package INTO loop_final.
-    WRITE: / 'Materyal Adı' , loop_final-matnr.
-    WRITE: / 'Materyal zzidsi' , loop_final-zzid.
-    WRITE: / 'Materyal açıklaması' , loop_final-maktx.
-  ENDLOOP.
-
-*&-----------------------------------------*---- SQL SÜRECİ  ------------------------------------------------------*
+    endloop.    "Tablo döngüsünün sonu
 
 
 
 
 
-*&-----------------------------------------*---- LOG SÜRECİ İÇİN FORMLAR ----------------------------------------------*
+
+    if gt_final_package is not initial.    "Eğer final paketi bomboş değilse
 
 
-FORM set_log_time.             "Log için başlangıç ve bitiş saati ve tarihi alma
-  GET TIME.
+
+      sort gt_final_package by matnr ascending    " Matnr'leri alt alta, zzid'lerine göre sırala
+                               zzid descending.
+
+      delete adjacent duplicates from gt_final_package.   " Eski zzid'ye sahip olanları sil
+
+
+
+
+      select matnr, maktx                        " gt_final_package'da olan malzemeleri makt içerisinde bul ve bu malzemelerin adı ve tanımlarını al
+        from makt
+        for all entries in @gt_final_package
+        where matnr = @gt_final_package-matnr
+        and spras = @gv_spras
+        into table @gt_makt_map.
+
+
+
+      loop at gt_final_package assigning <fs_pkg>.    "gt_final_package içinde gez
+        read table gt_makt_map into gs_makt_map      "Malzeme açklamaları tablosunda gt_final_package'daki malzeme adları ile arama yap
+             with key matnr = <fs_pkg>-matnr.
+
+        if sy-subrc = 0.                              " Eğer bir malzemeyi gt_makt_map tablosunda bulduysa
+          <fs_pkg>-maktx = gs_makt_map-maktx.       " Onun açıklamasını alıp gt_final_package tablosuna ekle
+        endif.
+      endloop.
+      unassign <fs_pkg>.
+
+
+
+      perform save_log.   "İşlem sonunda log at
+
+
+    else.
+      write: / , / 'Tablolarda belirtilen delta aralığına uygun kayıt bulunamadı.'.
+    endif.
+
+
+
+  else.
+    write: /, / 'Yeni delta kaydı bulunamadı. Sistem güncel.'.
+  endif.
+
+
+********************************************************************** ANA YÜRÜTME BLOĞU SONU
+
+
+
+**********************************************************************
+*SQL SÜRECİ
+
+
+  data loop_final type gs_final_package2.                       "SQL'den önce final paketinde gezip çalışıyor mu diye test et
+  loop at gt_final_package into loop_final.
+    write: / 'Materyal Adı' , loop_final-matnr.
+    write: / 'Materyal zzidsi' , loop_final-zzid.
+    write: / 'Materyal açıklaması' , loop_final-maktx.
+  endloop.
+
+
+*& SQL SÜRECİ  ------------------------------------------------------
+
+
+*&-----------------------------------------*---- LOG SÜRECİ İÇİN FORMLAR
+
+
+
+
+form set_log_time.    "Log için başlangıç ve bitiş saati ve tarihi alma
+  get time.
   gv_baslangic_tarihi = sy-datum.
   gv_baslangic_saati = sy-uzeit.
-ENDFORM.
+endform.
 
 
-
-FORM get_next_log_id CHANGING cv_zzid TYPE zpp_tbl_meo-zzid.    "Log için sıradaki ID'yi al
-  DATA: lv_number TYPE char10.
-  CLEAR: cv_zzid, lv_number.
-  CALL FUNCTION 'NUMBER_GET_NEXT'
-    EXPORTING
+"Log için sıradaki ID'yi al
+form get_next_log_id changing cv_zzid type zpp_tbl_meo-zzid.
+  data: lv_number type char10.
+  clear: cv_zzid, lv_number.
+  call function 'NUMBER_GET_NEXT'
+    exporting
       nr_range_nr             = '1'
       object                  = 'ZPP_MEO_BS'
-    IMPORTING
+    importing
       number                  = lv_number
-    EXCEPTIONS
+    exceptions
       interval_not_found      = 1
       number_range_not_intern = 2
       object_not_found        = 3
@@ -230,31 +255,31 @@ FORM get_next_log_id CHANGING cv_zzid TYPE zpp_tbl_meo-zzid.    "Log için sıra
       quantity_is_not_1       = 5
       interval_overflow       = 6
       buffer_overflow         = 7
-      OTHERS                  = 8.
-  IF sy-subrc <> 0.
-    MESSAGE 'Log ID için numara aralığından değer alınmadı.' TYPE 'E'.
-  ENDIF.
+      others                  = 8.
+  if sy-subrc <> 0.
+    message 'Log ID için numara aralığından değer alınmadı.' type 'E'.
+  endif.
 
-  CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
-    EXPORTING
+  call function 'CONVERSION_EXIT_ALPHA_INPUT'
+    exporting
       input  = lv_number
-    IMPORTING
+    importing
       output = cv_zzid.
-ENDFORM.
+endform.
 
 
 
 
-FORM save_log.                              " lOG alıyoruz.
-  CLEAR gv_log_id.
+form save_log.                              " Log alıyoruz.
+  clear gv_log_id.
 
-  PERFORM get_next_log_id CHANGING gv_log_id.
+  perform get_next_log_id changing gv_log_id.
 
-  GET TIME.
+  get time.
   gv_bitis_tarihi = sy-datum.
   gv_bitis_saati = sy-uzeit.
 
-  CLEAR meo_log.
+  clear meo_log.
 
   meo_log-zzid = gv_log_id.
   meo_log-tanim = 'ZMMR_MEO_SQL'.
@@ -265,16 +290,16 @@ FORM save_log.                              " lOG alıyoruz.
   meo_log-ernam = sy-uname.
   meo_log-loekz = space.
 
-  INSERT zpp_tbl_meo FROM meo_log.
+  insert zpp_tbl_meo from meo_log.
 
-  IF sy-subrc <> 0.
-    MESSAGE 'Log başlık kaydı oluşturulamadı' TYPE 'E'.
-  ENDIF.
+  if sy-subrc <> 0.
+    message 'Log başlık kaydı oluşturulamadı' type 'E'.
+  endif.
 
-  COMMIT WORK AND WAIT.
-  MESSAGE |Log Kaydı Oluşturuldu. ID : { gv_log_id }| TYPE 'S'.
+  commit work and wait.
+  message |Log Kaydı Oluşturuldu. ID : { gv_log_id }| type 'S'.
 
-ENDFORM.
+endform.
 
 
 *&-----------------------------------------*---- LOG SÜRECİ  ------------------------------------------------------*
