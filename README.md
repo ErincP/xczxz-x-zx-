@@ -26,9 +26,9 @@ DATA: lv_max_matnr         TYPE matnr,
       lv_last_processed_id TYPE zpp_tbl_meo-zzid,
       lv_max_id            TYPE zpp_tbl_meo-zzid.
 TYPES: BEGIN OF gs_final_package2,                "döngüde tablolardan alınan verilerin toplanacağı structure
-        matnr TYPE matnr,
-        zzid  TYPE zpp_meo_id,
-        maktx TYPE maktx,
+         matnr TYPE matnr,
+         zzid  TYPE zpp_meo_id,
+         maktx TYPE maktx,
        END OF gs_final_package2.
 
 DATA: gt_final_package LIKE TABLE OF gs_final_package.
@@ -37,25 +37,24 @@ FIELD-SYMBOLS: <gt_data>  TYPE STANDARD TABLE,
                <gv_matnr> TYPE any,
                <gv_zzid>  TYPE any.  "Delta/Takip ID'sini okumak için.
 DATA lv_maktx TYPE maktx.
-DATA: lv_spras TYPE spras.
+DATA: gv_spras TYPE spras.
 
-DATA meo_log TYPE ZPP_TBL_MEO.
+DATA: gv_log_id           TYPE zpp_tbl_meo-zzid,   " LOG süreci için global değişkenler
+      gv_baslangic_saati  TYPE uzeit,
+      gv_bitis_saati      TYPE uzeit,
+      gv_baslangic_tarihi TYPE datum,
+      gv_bitis_tarihi     TYPE datum,
+      gv_tanim            TYPE zpp_meo_tanim,
+      meo_log             TYPE zpp_tbl_meo.
 
-DATA: lv_baslangic_saati TYPE uzeit,
-      lv_bitis_saati     TYPE uzeit,
-      lv_baslangic_tarihi TYPE datum,
-      lv_bitis_tarihi TYPE datum,
-      lv_tanim TYPE zpp_meo_tanim.
-
-DATA: lv_last_zzid TYPE zpp_tbl_meo-zzid.
-*&---------------------------------------------------------------------*
-*---- ANA YÜRÜTME BLOĞU -----*
+*&-----------------------------------------*---- ANA YÜRÜTME BLOĞU ------------------------------------------------------*
 START-OF-SELECTION.
 
-  lv_spras = sy-langu.
-  lv_baslangic_saati = sy-uzeit.
-  lv_baslangic_tarihi = sy-datum.
-  lv_spras = sy-langu.
+  PERFORM set_log_time.          "Programı çalıştırmadan evvel başlangıç tarihini ve saatini al
+
+  gv_spras = sy-langu.
+
+
 
 
   SELECT tabname FROM zmatnr_tablolar                   "Aktif tabloları çekiyoruz.
@@ -68,10 +67,6 @@ START-OF-SELECTION.
   ENDIF.
 
   LOOP AT gt_active_tables INTO gs_active_table.   "Aktif tabloları sırasıyla döngüye alıyoruz.
-
-IF gs_active_table-tabname = 'ZPPT_MEO_VRS_DEP'.
-  BREAK-POINT.
-ENDIF.
 
     CLEAR: lv_max_matnr,
            lv_last_processed_id,
@@ -116,18 +111,18 @@ ENDIF.
         ASSIGN COMPONENT 'MATNR' OF STRUCTURE <gs_data> TO <gv_matnr>.
         ASSIGN COMPONENT 'ZZID' OF STRUCTURE <gs_data> TO <gv_zzid>.
 
-          IF <gv_matnr> IS ASSIGNED AND <gv_matnr> IS NOT INITIAL.
-            SELECT SINGLE maktx
-              FROM makt
-              INTO lv_maktx
-              WHERE matnr = <gv_matnr>
-              AND spras = lv_spras. "Sistemin mevcut dili.
-          ENDIF.
+        IF <gv_matnr> IS ASSIGNED AND <gv_matnr> IS NOT INITIAL.
+          SELECT SINGLE maktx
+            FROM makt
+            INTO lv_maktx
+            WHERE matnr = <gv_matnr>
+            AND spras = gv_spras. "Sistemin mevcut dili.
+        ENDIF.
 
-          gs_final_package-matnr = <gv_matnr>.                      " Açıklamayı zzid ve mantr ile geçici tabloya atıyoruz
-          gs_final_package-zzid = <gv_zzid>.
-          gs_final_package-maktx = lv_maktx.
-          APPEND gs_final_package TO gt_final_package.
+        gs_final_package-matnr = <gv_matnr>.                      " Açıklamayı zzid ve mantr ile geçici tabloya atıyoruz
+        gs_final_package-zzid = <gv_zzid>.
+        gs_final_package-maktx = lv_maktx.
+        APPEND gs_final_package TO gt_final_package.
 
       ENDLOOP.
 
@@ -140,27 +135,42 @@ ENDIF.
     UNASSIGN: <gt_data>, <gs_data>, <gv_zzid>, <gv_matnr>.
   ENDLOOP.
 
+
+  PERFORM save_log.   "İşlem sonunda log at
+
+
+*&-----------------------------------------*---- ANA YÜRÜTME BLOĞU ------------------------------------------------------*
+
+*&-----------------------------------------*---- SQL SÜRECİ ------------------------------------------------------*
   IF gt_final_package IS NOT INITIAL.                     "Tekrar eden verileri temizle
     SORT gt_final_package BY zzid matnr.
     DELETE ADJACENT DUPLICATES FROM gt_final_package COMPARING zzid matnr.
   ENDIF.
 
+*&-----------------------------------------*---- SQL SÜRECİ  ------------------------------------------------------*
 
- DATA loop_final TYPE gs_final_package2.                       "SQL'den önce final paketinde gezip çalışıyor mu diye test et 
- LOOP AT gt_final_package INTO loop_final.
- WRITE: / 'Materyal Adı' , loop_final-matnr.
- WRITE: / 'Materyal zzidsi' , loop_final-zzid.
- WRITE: / 'Materyal açıklaması' , loop_final-maktx.
- ENDLOOP.
+  DATA loop_final TYPE gs_final_package2.                       "SQL'den önce final paketinde gezip çalışıyor mu diye test et
+  LOOP AT gt_final_package INTO loop_final.
+    WRITE: / 'Materyal Adı' , loop_final-matnr.
+    WRITE: / 'Materyal zzidsi' , loop_final-zzid.
+    WRITE: / 'Materyal açıklaması' , loop_final-maktx.
+  ENDLOOP.
+
+*&-----------------------------------------*---- LOG SÜRECİ İÇİN FORMLAR ----------------------------------------------*
+
+
+FORM set_log_time.             "Log için başlangıç ve bitiş saati ve tarihi alma
+  GET TIME.
+  gv_baslangic_tarihi = sy-datum.
+  gv_baslangic_saati = sy-uzeit.
+ENDFORM.
 
 
 
-FORM get_next_log_id CHANGING cv_zzid TYPE zpp_tbl_meo-zzid.
-
-DATA: lv_number TYPE char10.
-CLEAR: cv_zzid, lv_number.
-
- CALL FUNCTION 'NUMBER_GET_NEXT'                     " Numara Aralığı Nesnesinden (Number Range Object) numara çeker 
+FORM get_next_log_id CHANGING cv_zzid TYPE zpp_tbl_meo-zzid.    "Log için sıradaki ID'yi al
+  DATA: lv_number TYPE char10.
+  CLEAR: cv_zzid, lv_number.
+  CALL FUNCTION 'NUMBER_GET_NEXT'
     EXPORTING
       nr_range_nr             = '1'
       object                  = 'ZPP_MEO_BS'
@@ -174,71 +184,51 @@ CLEAR: cv_zzid, lv_number.
       quantity_is_not_1       = 5
       interval_overflow       = 6
       buffer_overflow         = 7
-      others                  = 8.
-
+      OTHERS                  = 8.
   IF sy-subrc <> 0.
-   MESSAGE 'Log ID için numara aralığından değer alınamadı.' TYPE 'E'.
+    MESSAGE 'Log ID için numara aralığından değer alınmadı.' TYPE 'E'.
   ENDIF.
 
-  CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'          " Üretilen ID'ye Eksik sıfırları ekler 
+  CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
     EXPORTING
       input  = lv_number
     IMPORTING
       output = cv_zzid.
-
-ENDFORM. 
-
-
-
-FORM save_log.
-
-  CLEAR lv_last_zzid.
-
-  perform get_next_log_id changing gv_log_id.
-
-  get time.
-  gv_bit_tr   = sy-datum.
-  gv_bit_saat = sy-uzeit.
-
-  "------------------------------------------------------------
-  " Başlık kaydı
-  "------------------------------------------------------------
-  clear gs_log_h.
-
-  gs_log_h-zzid     = gv_log_id.
-  gs_log_h-tanim    = 'GR_M_MB51'.
-  gs_log_h-bas_tr   = gv_bas_tr.
-  gs_log_h-bas_saat = gv_bas_saat.
-  gs_log_h-bit_tr   = gv_bit_tr.
-  gs_log_h-bit_saat = gv_bit_saat.
-  gs_log_h-ernam    = sy-uname.
-  gs_log_h-loekz    = space.
-
-  insert zpp_tbl_meo from gs_log_h.
-
-  if sy-subrc <> 0.
-    message 'Log başlık kaydı oluşturulamadı.' type 'E'.
-  endif.
-
-  commit work and wait.
-
-  message | Log kaydı oluşturuldu. ID: { gv_log_id }| type 'S'.
+ENDFORM.
 
 
 
 
+FORM save_log.                              " lOG alıyoruz.
+  CLEAR gv_log_id.
 
-lv_tanim = 'ZPP_MEO_SQL'.
-lv_bitis_tarihi = sy-datum.
-lv_bitis_saati = sy-uzeit.
+  PERFORM get_next_log_id CHANGING gv_log_id.
 
+  GET TIME.
+    gv_bitis_tarihi = sy-datum.
+    gv_bitis_saati = sy-uzeit.
 
-meo_log-BAS_TR = lv_baslangic_tarihi.    "Log tablosuna kayıt atıyoruz. 
-meo_log-BAS_SAAT = lv_baslangic_saati.
-meo_log-BIT_TR = lv_bitis_tarihi.
-meo_log-BIT_SAAT = lv_bitis_saati.
-meo_log-ERNAM = sy-uname.
-meo_log-MANDT = sy-mandt.
-meo_log-ZZID = lv_last_zzid.
-meo_log-TANIM = lv_tanim.
+  CLEAR meo_log.
+
+  meo_log-zzid = gv_log_id.
+  meo_log-tanim = 'ZMMR_MEO_SQL'.
+  meo_log-bas_tr = gv_baslangic_tarihi.
+  meo_log-bas_saat = gv_baslangic_saati.
+  meo_log-bit_tr = gv_bitis_tarihi.
+  meo_log-bit_saat = gv_bitis_saati.
+  meo_log-ernam = sy-uname.
+  meo_log-loekz = space.
+
 INSERT zpp_tbl_meo FROM meo_log.
+
+IF sy-subrc <> 0.
+  MESSAGE 'Log başlık kaydı oluşturulamadı' TYPE 'E'.
+ENDIF.
+
+COMMIT WORK AND WAIT.
+MESSAGE |Log Kaydı Oluşturuldu. ID : { gv_log_id }| TYPE 'S'.
+
+ENDFORM.
+
+
+*&-----------------------------------------*---- LOG SÜRECİ  ------------------------------------------------------*
